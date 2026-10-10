@@ -610,7 +610,8 @@ function interceptCandidates(samples, p, { hMin, hMax, volley = false, reaction 
     }
     if (s.y < hMin || s.y > hMax) continue;
     for (const side of [1, -1]) { // 1: forehand (ball on racket side)
-      const sx = s.x - R.x * 0.62 * side, sz = s.z + p.side * 0.15;
+      const reach = p === DEF ? 0.75 : 0.62; // the runner gets there at full stretch
+      const sx = s.x - R.x * reach * side, sz = s.z + p.side * 0.15;
       if (Math.abs(sx) > 9 || p.side * sz > 20) continue;
       const d = Math.hypot(sx - p.pos.x, sz - p.pos.z);
       out.push({ s, sx, sz, side, kind: side === 1 ? 'fh' : 'bh', req: d / avail });
@@ -622,9 +623,12 @@ function interceptCandidates(samples, p, { hMin, hMax, volley = false, reaction 
 function chooseDefender(c) {
   const ok = c.filter(x => x.req <= DEF_VMAX * 1.06); // a last lunge beyond top speed
   if (ok.length) {
-    // Earliest reachable point = arriving at full sprint. That's the ギリギリ.
+    // Usually the last moment: the ball dropping toward its second bounce, scooped
+    // at full stretch. Sometimes the earliest reachable point (still at full sprint).
     ok.sort((a, b) => a.s.t - b.s.t);
-    const best = ok[Math.min(ok.length - 1, Math.floor(Math.random() * 5))];
+    const late = Math.random() < 0.8;
+    const pickIdx = late ? ok.length - 1 - Math.floor(Math.random() * Math.min(4, ok.length)) : Math.min(ok.length - 1, Math.floor(Math.random() * 4));
+    const best = ok[pickIdx];
     return { ...best, desperate: best.req > DEF_VMAX * 0.85 || best.s.y < 0.35, dive: false };
   }
   if (!c.length) return null;
@@ -699,7 +703,7 @@ function launch(hitter, receiver, P, t0, hitKind) {
     // Try many attacking shots and keep the one closest to a target difficulty:
     // the slowest possible run that still reaches the ball (minReq). Above
     // DEF_VMAX the runner can only get there with a dive.
-    const target = DEF_VMAX * (Math.random() < 0.3 ? rand(1.1, 1.2) : rand(0.8, 1.02));
+    const target = DEF_VMAX * (Math.random() < 0.3 ? rand(1.1, 1.2) : rand(0.92, 1.05));
     let best = null, easiest = null;
     const want = pickShotType();
     for (let tries = 0; tries < 32; tries++) {
@@ -744,7 +748,7 @@ function launch(hitter, receiver, P, t0, hitKind) {
   receiver.swing = { time: hitTime, kind: plan.kind };
   const dive = receiver === DEF && (plan.dive || (plan.desperate && Math.random() < 0.15));
   receiver.lunge = receiver === DEF && plan.desperate && !dive ? { time: hitTime, side: plan.side, dive: false } : null;
-  plan.drama = dive || (receiver === DEF && plan.s.y < 0.3);
+  plan.drama = dive || (receiver === DEF && plan.s.y < 0.2 && Math.random() < 0.5);
   if (dive) stats.dives++;
   receiver.anim = dive ? { kind: 'dive', time: hitTime } : plan.kind === 'smash' ? { kind: 'smash', time: hitTime } : null;
 
@@ -905,18 +909,18 @@ function noiseFn(bright) {
 }
 
 function buildSounds() {
-  // Racket hit: sharp string "pock" — transient click, body resonances, short noise burst.
+  // Racket hit: a rounded, hollow "pock" — body resonances of ball and strings, a little felt noise.
   SOUNDS.hit = [];
   for (let k = 0; k < 6; k++) {
-    const f1 = rand(1050, 1300), f2 = rand(560, 680), f3 = rand(2100, 2600), thump = rand(160, 210);
-    const nz = noiseFn(0.55);
-    SOUNDS.hit.push(synth(0.22, t =>
-      (t < 0.0015 ? (Math.random() * 2 - 1) * (1 - t / 0.0015) * 0.9 : 0) +
-      0.8 * ring(t, f1, 0.009, 0.06) +
-      0.55 * ring(t, f2, 0.014, 0.04) +
-      0.3 * ring(t, f3, 0.005) +
-      0.45 * ring(t, thump, 0.018) +
-      0.5 * nz() * Math.exp(-t / 0.011)));
+    const f1 = rand(700, 860), f2 = rand(380, 470), f3 = rand(1450, 1750), thump = rand(130, 170);
+    const nz = noiseFn(0.28);
+    const attack = t => Math.min(t / 0.0012, 1); // rounded onset instead of a click
+    SOUNDS.hit.push(synth(0.26, t => attack(t) * (
+      0.75 * ring(t, f1, 0.012, 0.05) +
+      0.7 * ring(t, f2, 0.02, 0.04) +
+      0.12 * ring(t, f3, 0.004) +
+      0.6 * ring(t, thump, 0.024) +
+      0.35 * nz() * Math.exp(-t / 0.008))));
   }
   // Bounce on a hard court: duller, lower "tock".
   SOUNDS.bounce = [];
@@ -963,7 +967,7 @@ function initAudio() {
   const verb = audio.createConvolver();
   verb.buffer = courtImpulse();
   wet = audio.createGain();
-  wet.gain.value = 0.22;
+  wet.gain.value = 0.3;
   wet.connect(verb).connect(master);
   buildSounds();
 }
@@ -988,7 +992,7 @@ function sound(kind, { pos = null, power = 1, rate = 1 } = {}) {
   // Soft shots sound duller.
   const tone = audio.createBiquadFilter();
   tone.type = 'lowpass';
-  tone.frequency.value = 2500 + 9000 * power;
+  tone.frequency.value = 1600 + 4500 * power;
   const g = audio.createGain();
   g.gain.value = gain;
   src.connect(tone).connect(g);
