@@ -29,4 +29,5 @@ npx http-server -p 8123 .
 - 作り方: Gemini で参考画像を生成（`tools/gemini_ref.py`、画像は `art/ref1.png`）→ Tripo で 3D モデル化・自動リグ・走りアニメ（`tools/tripo.py`）
 - API キーは環境変数（`GEMINI_API_KEY` / `TRIPO_API_KEY`）でのみ使い、公開ページには入れない
 - Tripo のアニメーションは 1 回のリクエストで 1 つだけ頼む（複数まとめて頼むと失敗する）
-- 使った費用: Tripo 65 クレジット（モデル 30 + リグ 25 + 走り 10）、Gemini 画像 1 枚（約 $0.04）
+- アニメーション: run（走り）/ dive（飛び込み）/ idle（攻撃側の待ち）/ slash（スマッシュと、構えの姿勢）を 1 本ずつ作り、`tools/merge_anims.py` で 1 ファイルにまとめた
+- 使った費用: Tripo 95 クレジット（モデル 30 + リグ 25 + アニメ 10×4）、Gemini 画像 1 枚（約 $0.04）

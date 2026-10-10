@@ -15,6 +15,7 @@ const DHALF_W = 5.485;  // doubles
 const SERVICE_Z = 6.4;
 const SAMPLE_DT = 1 / 240;
 const DEF_VMAX = 8.2;   // runner top speed
+const PERSON = 0.85;    // player scale (1.8 m model -> ~1.53 m) so the court reads bigger
 const SPEED = Number(new URLSearchParams(location.search).get('speed')) || 1; // debug fast-forward
 
 const rand = (a, b) => a + Math.random() * (b - a);
@@ -158,7 +159,7 @@ buildCourt();
 // ---------------------------------------------------------------------------
 // Ball, trail, shadow blob, bounce rings
 // ---------------------------------------------------------------------------
-const ball = new THREE.Mesh(new THREE.SphereGeometry(0.075, 16, 12),
+const ball = new THREE.Mesh(new THREE.SphereGeometry(0.06, 16, 12),
   mat(0xdcf542, { emissive: 0x4a5a00, roughness: 0.4 }));
 ball.castShadow = true;
 scene.add(ball);
@@ -266,6 +267,8 @@ function makePlayer({ shirt, shorts, cap, skin = 0xd9a77c }) {
 
 const ATT = makePlayer({ shirt: 0xc8463c, shorts: 0x2b2b33, cap: 0xf2f2f2 });
 const DEF = makePlayer({ shirt: 0xf3f5fa, shorts: 0x1f4fa8, cap: 0x1f4fa8, skin: 0xe2b48c });
+ATT.root.scale.setScalar(PERSON);
+DEF.root.scale.setScalar(PERSON);
 ATT.side = -1; ATT.baseYaw = 0; ATT.yaw = 0; ATT.home.set(0, 0, -10.2); ATT.pos.copy(ATT.home);
 DEF.side = 1; DEF.baseYaw = Math.PI; DEF.yaw = Math.PI; DEF.home.set(0, 0, 12.8); DEF.pos.copy(DEF.home);
 
@@ -308,7 +311,7 @@ function updatePlayer(p, t, dt) {
   let targetYaw = p.baseYaw;
   if (speed > 2) {
     const runYaw = Math.atan2(p.vel.x, p.vel.z);
-    targetYaw = angleLerp(p.baseYaw, runYaw, clamp((speed - 2) / 5, 0, p.model ? 0.9 : 0.75) * (1 - swingK));
+    targetYaw = angleLerp(p.baseYaw, runYaw, clamp((speed - 2) / 5, 0, p.model ? 0.9 : 0.75) * (p.anim && p.anim.kind === 'dive' ? 1 : 1 - swingK));
   }
   p.yaw = angleLerp(p.yaw, targetYaw, 1 - Math.exp(-dt * 10));
 
@@ -362,7 +365,7 @@ function updatePlayer(p, t, dt) {
 
   p.root.position.set(p.pos.x, 0, p.pos.z);
   p.root.rotation.y = p.yaw;
-  if (p.model) updateModel(p, speed, dt, ax, ay, az, swingBlend);
+  if (p.model) updateModel(p, t, speed, dt, ax, ay, az, swingBlend);
 }
 
 // ---------------------------------------------------------------------------
@@ -393,7 +396,7 @@ function inPlaceClip(clip, scene) {
       v.applyQuaternion(pqi).toArray(hp.values, i);
     }
   }
-  return new THREE.AnimationClip('run', clip.duration, tracks);
+  return new THREE.AnimationClip(clip.name, clip.duration, tracks);
 }
 
 function tintMaterial(src, color) {
@@ -432,7 +435,7 @@ function makeRacket() {
   return racket;
 }
 
-function attachModel(p, gltf, clip, tint) {
+function attachModel(p, gltf, clips, tint) {
   const model = cloneSkinned(gltf.scene);
   model.traverse(o => {
     if (o.isMesh) {
@@ -450,12 +453,23 @@ function attachModel(p, gltf, clip, tint) {
   p.root.add(lean);
 
   const mixer = new THREE.AnimationMixer(model);
-  const run = mixer.clipAction(clip);
-  run.play();
-  run.weight = 0;
+  const act = (clip, loop = true) => {
+    const a = mixer.clipAction(clip);
+    if (!loop) a.setLoop(THREE.LoopOnce);
+    a.play();
+    a.weight = 0;
+    return a;
+  };
+  const run = act(clips.run);
+  // Attacker waits relaxed (idle); the runner waits crouched (the slash clip's ready frame).
+  const base = p === ATT ? act(clips.idle) : act(clips.ready);
+  if (p !== ATT) { base.paused = true; base.time = READY_T; }
+  const dive = act(clips.dive);
+  const smash = act(clips.slash);
+  dive.paused = smash.paused = true; // time is set by hand from the shot timeline
   const bone = n => model.getObjectByName(n);
   const m = {
-    lean, mixer, run,
+    lean, mixer, run, base, dive, smash,
     rUp: bone('R_Upperarm'), rFo: bone('R_Forearm'), rHand: bone('R_Hand'),
     lUp: bone('L_Upperarm'), lFo: bone('L_Forearm'), lHand: bone('L_Hand'),
   };
@@ -489,33 +503,58 @@ function aimBone(bone, child, dirWorld, w) {
 const armDir = (ax, ay, az) =>
   new THREE.Vector3(0, -1, 0).applyEuler(new THREE.Euler(ax, 0, az, 'XYZ')).applyAxisAngle(Y_AXIS, ay);
 const IDLE_FORE = new THREE.Vector3(-0.3, -0.25, 1).normalize();
-const IDLE_LEFT_UP = new THREE.Vector3(0.3, -1, 0.15).normalize();
-const IDLE_LEFT_FORE = new THREE.Vector3(0.1, -0.4, 1).normalize();
 
-function updateModel(p, speed, dt, ax, ay, az, swingBlend) {
+// One-shot clips, synced so the clip's contact frame lands on the hit time.
+// After contact the clip runs `after`x faster so the player is up in time.
+const ONE_SHOT = {
+  dive: { start: 0.95, contact: 1.17, end: 2.73, after: 1.6 },
+  smash: { start: 1.45, contact: 2.0, end: 2.6, after: 1.0 },
+};
+const READY_T = 0.94; // slash clip: crouched ready stance
+
+function oneShotState(p, t) {
+  if (!p.anim) return null;
+  const c = ONE_SHOT[p.anim.kind];
+  const d = t - p.anim.time;
+  const clipT = d < 0 ? c.contact + d : c.contact + d * c.after;
+  if (clipT < c.start) return null;
+  if (clipT >= c.end) { p.anim = null; return null; }
+  const fadeIn = clamp((clipT - c.start) / 0.12, 0, 1);
+  const fadeOut = clamp((c.end - clipT) / (0.25 * c.after), 0, 1);
+  return { kind: p.anim.kind, clipT, w: Math.min(fadeIn, fadeOut) };
+}
+
+function updateModel(p, t, speed, dt, ax, ay, az, swingBlend) {
   const m = p.model;
+  const shot = oneShotState(p, t);
+  const ow = shot ? shot.w : 0;
   const runW = clamp((speed - 0.6) / 2.4, 0, 1);
-  m.run.weight = runW;
+  m.run.weight = runW * (1 - ow);
   m.run.timeScale = Math.max(speed, 2) / RUN_CLIP_SPEED;
+  m.base.weight = (1 - runW) * (1 - ow);
+  m.dive.weight = shot && shot.kind === 'dive' ? ow : 0;
+  m.smash.weight = shot && shot.kind === 'smash' ? ow : 0;
+  if (shot) (shot.kind === 'dive' ? m.dive : m.smash).time = shot.clipT;
   m.mixer.update(dt);
 
-  m.lean.rotation.set(p.body.rotation.x * 0.5, 0, p.body.rotation.z * 0.6);
+  m.lean.rotation.set(p.body.rotation.x * 0.5 * (1 - ow), 0, p.body.rotation.z * 0.6 * (1 - ow));
   p.root.updateMatrixWorld(true);
   m.lean.getWorldQuaternion(_lq);
 
+  // Racket arm is procedural (forehand/backhand) unless a one-shot clip owns it.
   const up = armDir(ax, ay, az);
   const fore = IDLE_FORE.clone().lerp(up, swingBlend).normalize();
-  aimBone(m.rUp, m.rFo, up.applyQuaternion(_lq), 1);
-  aimBone(m.rFo, m.rHand, fore.applyQuaternion(_lq), 1);
-  const lw = 1 - runW;
-  aimBone(m.lUp, m.lFo, IDLE_LEFT_UP.clone().applyQuaternion(_lq), lw);
-  aimBone(m.lFo, m.lHand, IDLE_LEFT_FORE.clone().applyQuaternion(_lq), lw);
+  aimBone(m.rUp, m.rFo, up.applyQuaternion(_lq), 1 - ow);
+  aimBone(m.rFo, m.rHand, fore.applyQuaternion(_lq), 1 - ow);
 }
 
 new GLTFLoader().load('assets/player.glb', gltf => {
-  const clip = inPlaceClip(gltf.animations[0], gltf.scene);
-  attachModel(ATT, gltf, clip, new THREE.Color(0xb8302a));
-  attachModel(DEF, gltf, clip, null);
+  const clips = {};
+  for (const a of gltf.animations) clips[a.name] = inPlaceClip(a, gltf.scene);
+  clips.ready = clips.slash.clone(); // separate action for the frozen ready frame
+  clips.ready.name = 'ready';
+  attachModel(ATT, gltf, clips, new THREE.Color(0xb8302a));
+  attachModel(DEF, gltf, clips, null);
 }, undefined, err => console.warn('player model failed to load, using block figures', err));
 
 // ---------------------------------------------------------------------------
@@ -563,7 +602,7 @@ function interceptCandidates(samples, p, { hMin, hMax, volley = false, reaction 
     const avail = s.t - reaction;
     if (avail < 0.15) continue;
     if (s.b === 0) {
-      if (!volley || s.vy > 0 || s.y < 2.2 || s.y > 3.0) continue;
+      if (!volley || s.vy > 0 || s.y < 1.95 || s.y > 2.6) continue;
       const sx = s.x - R.x * 0.3, sz = s.z + p.side * 0.35;
       const d = Math.hypot(sx - p.pos.x, sz - p.pos.z);
       out.push({ s, sx, sz, side: 1, kind: 'smash', req: d / avail });
@@ -571,7 +610,7 @@ function interceptCandidates(samples, p, { hMin, hMax, volley = false, reaction 
     }
     if (s.y < hMin || s.y > hMax) continue;
     for (const side of [1, -1]) { // 1: forehand (ball on racket side)
-      const sx = s.x - R.x * 0.72 * side, sz = s.z + p.side * 0.15;
+      const sx = s.x - R.x * 0.62 * side, sz = s.z + p.side * 0.15;
       if (Math.abs(sx) > 9 || p.side * sz > 20) continue;
       const d = Math.hypot(sx - p.pos.x, sz - p.pos.z);
       out.push({ s, sx, sz, side, kind: side === 1 ? 'fh' : 'bh', req: d / avail });
@@ -599,7 +638,7 @@ function chooseAttacker(c) {
   if (smash.length) return smash[Math.floor(smash.length / 2)];
   const ground = ok.filter(x => x.kind !== 'smash');
   if (ground.length) {
-    ground.sort((a, b) => (Math.abs(a.s.y - 1.0) + a.req * 0.05) - (Math.abs(b.s.y - 1.0) + b.req * 0.05));
+    ground.sort((a, b) => (Math.abs(a.s.y - 0.9) + a.req * 0.05) - (Math.abs(b.s.y - 0.9) + b.req * 0.05));
     return ground[0];
   }
   if (!c.length) return null;
@@ -658,10 +697,13 @@ function launch(hitter, receiver, P, t0, hitKind) {
   const hitTime = t0 + plan.s.t;
   setMove(receiver, new THREE.Vector3(plan.sx, 0, plan.sz), t0 + (plan.dive ? 0.04 : 0.1), hitTime);
   receiver.swing = { time: hitTime, kind: plan.kind };
-  receiver.lunge = receiver === DEF && plan.desperate ? { time: hitTime, side: plan.side, dive: plan.dive } : null;
+  const dive = receiver === DEF && (plan.dive || (plan.desperate && Math.random() < 0.4));
+  receiver.lunge = receiver === DEF && plan.desperate && !dive ? { time: hitTime, side: plan.side, dive: false } : null;
+  receiver.anim = dive ? { kind: 'dive', time: hitTime } : plan.kind === 'smash' ? { kind: 'smash', time: hitTime } : null;
 
   const homeDist = hitter.pos.distanceTo(hitter.home);
-  setMove(hitter, hitter.home, t0 + 0.3, t0 + 0.3 + 0.4 + homeDist / 4.5);
+  const getUp = hitter.anim && hitter.anim.kind === 'dive' ? 0.95 : 0; // finish the roll first
+  setMove(hitter, hitter.home, t0 + 0.3 + getUp, t0 + 0.3 + getUp + 0.4 + homeDist / 4.5);
 
   shot = { samples, t0, hitter, receiver, plan, spec, lastB: 0 };
   if (SHOT_LABEL[spec.type]) flash(SHOT_LABEL[spec.type]);
@@ -718,7 +760,7 @@ function step(dt) {
       if (b.b === 1) spawnRing(b.x, b.z);
       sound('bounce', b.b === 1 ? 1 : 0.5);
     }
-    ball.position.set(b.x, Math.max(b.y, 0.075), b.z);
+    ball.position.set(b.x, Math.max(b.y, 0.06), b.z);
   }
 
   updatePlayer(ATT, simT, dt);
