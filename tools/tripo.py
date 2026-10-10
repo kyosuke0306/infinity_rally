@@ -4,6 +4,8 @@
   python3 tools/tripo.py check  <model_task_id>         # pre-rig check (free)
   python3 tools/tripo.py rig    <model_task_id>         # auto rig (25 cr)
   python3 tools/tripo.py anim   <rig_task_id> preset:run # retarget animation (10 cr)
+                                                        # ONE animation per request: Tripo fails when
+                                                        # several animations are asked for at once
   python3 tools/tripo.py get    <task_id> out.glb       # download result
 """
 import json, os, sys, time, urllib.request, uuid
