@@ -23,3 +23,9 @@ npx http-server -p 8123 .
 - `X.Y` は `VERSION` ファイル（大きな変更のときに手で上げる）
 - `Z` はデプロイ実行番号（公開するたびに自動で増える）
 - 日時はデプロイ時刻（日本時間）
+
+## 3D モデル
+- `assets/player.glb`: 選手モデル（2人で共用。攻撃側は白いウェアをシェーダーで赤に変えて表示）
+- 作り方: Gemini で参考画像を生成（`tools/gemini_ref.py`、画像は `art/ref1.png`）→ Tripo で 3D モデル化・自動リグ・走りアニメ（`tools/tripo.py`）
+- API キーは環境変数（`GEMINI_API_KEY` / `TRIPO_API_KEY`）でのみ使い、公開ページには入れない
+- 使った費用: Tripo 65 クレジット（モデル 30 + リグ 25 + 走り 10）、Gemini 画像 1 枚（約 $0.04）

@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 
 // ---------------------------------------------------------------------------
 // Constants (meters / seconds). z: along the court, x: across, y: up.
@@ -306,7 +308,7 @@ function updatePlayer(p, t, dt) {
   let targetYaw = p.baseYaw;
   if (speed > 2) {
     const runYaw = Math.atan2(p.vel.x, p.vel.z);
-    targetYaw = angleLerp(p.baseYaw, runYaw, clamp((speed - 2) / 6, 0, 0.75) * (1 - swingK));
+    targetYaw = angleLerp(p.baseYaw, runYaw, clamp((speed - 2) / 5, 0, p.model ? 0.9 : 0.75) * (1 - swingK));
   }
   p.yaw = angleLerp(p.yaw, targetYaw, 1 - Math.exp(-dt * 10));
 
@@ -337,10 +339,12 @@ function updatePlayer(p, t, dt) {
   // Racket arm
   const idle = { y: -0.5, z: -0.35, x: 0.35 };
   let ay = idle.y, az = idle.z, ax = idle.x;
+  let swingBlend = 0;
   if (p.swing) {
     const s = (t - (p.swing.time - 0.32)) / 0.52; // contact at ~62%
     const blend = s < 0 ? smooth(clamp(1 + s / 0.6, 0, 1)) : s > 1 ? smooth(clamp(1 - (s - 1) / 0.6, 0, 1)) : 1;
     const e = easeInOut(clamp(s, 0, 1));
+    swingBlend = blend;
     if (p.swing.kind === 'smash') {
       ay = lerp(idle.y, -0.2, blend);
       az = lerp(idle.z, -0.25, blend);
@@ -358,7 +362,161 @@ function updatePlayer(p, t, dt) {
 
   p.root.position.set(p.pos.x, 0, p.pos.z);
   p.root.rotation.y = p.yaw;
+  if (p.model) updateModel(p, speed, dt, ax, ay, az, swingBlend);
 }
+
+// ---------------------------------------------------------------------------
+// 3D player model (Tripo: generated from a Gemini reference image, auto-rigged,
+// with a retargeted run cycle). Both players share it; the attacker's white
+// outfit is recolored in the shader. Block figures stay as the fallback.
+// ---------------------------------------------------------------------------
+const MODEL_H = 1.8;          // model is 1 unit tall
+const RUN_CLIP_SPEED = 3.7;   // m/s the run clip covers at timeScale 1
+const Y_AXIS = new THREE.Vector3(0, 1, 0);
+const _a = new THREE.Vector3(), _b = new THREE.Vector3();
+const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _pq = new THREE.Quaternion(), _lq = new THREE.Quaternion();
+
+// Strip root motion (the clip runs forward) but keep the vertical bob.
+function inPlaceClip(clip, scene) {
+  const hip = scene.getObjectByName('Hip');
+  scene.updateMatrixWorld(true);
+  const pq = hip.parent.getWorldQuaternion(new THREE.Quaternion());
+  const pqi = pq.clone().invert();
+  const bind = hip.position.clone().applyQuaternion(pq);
+  const tracks = clip.tracks.filter(t => !t.name.endsWith('.scale') && (!t.name.endsWith('.position') || t.name === 'Hip.position'));
+  const hp = tracks.find(t => t.name === 'Hip.position');
+  if (hp) {
+    const v = new THREE.Vector3();
+    for (let i = 0; i < hp.values.length; i += 3) {
+      v.fromArray(hp.values, i).applyQuaternion(pq);
+      v.x = bind.x; v.z = bind.z;
+      v.applyQuaternion(pqi).toArray(hp.values, i);
+    }
+  }
+  return new THREE.AnimationClip('run', clip.duration, tracks);
+}
+
+function tintMaterial(src, color) {
+  const m = src.clone();
+  if (!color) return m;
+  m.onBeforeCompile = sh => {
+    sh.uniforms.uTint = { value: color };
+    sh.fragmentShader = 'uniform vec3 uTint;\n' + sh.fragmentShader.replace('#include <map_fragment>', `#include <map_fragment>
+      {
+        float mx = max(max(diffuseColor.r, diffuseColor.g), diffuseColor.b);
+        float mn = min(min(diffuseColor.r, diffuseColor.g), diffuseColor.b);
+        float k = smoothstep(0.3, 0.55, mx) * (1.0 - smoothstep(0.1, 0.22, (mx - mn) / max(mx, 1e-3)));
+        diffuseColor.rgb = mix(diffuseColor.rgb, uTint * (0.3 + 0.8 * mx), k);
+      }`);
+  };
+  m.customProgramCacheKey = () => 'tint-' + color.getHexString();
+  return m;
+}
+
+function makeRacket() {
+  const racket = new THREE.Group();
+  const part = (geo, color, y) => {
+    const m = new THREE.Mesh(geo, mat(color));
+    m.position.y = y;
+    m.castShadow = true;
+    racket.add(m);
+    return m;
+  };
+  part(new THREE.CylinderGeometry(0.016, 0.016, 0.24, 8), 0x222222, -0.1);
+  part(new THREE.TorusGeometry(0.12, 0.013, 6, 24), 0xe8e8e8, -0.37).scale.set(1, 1.3, 1);
+  const strings = new THREE.Mesh(new THREE.CircleGeometry(0.12, 20),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.25, side: THREE.DoubleSide }));
+  strings.position.y = -0.37;
+  strings.scale.set(1, 1.3, 1);
+  racket.add(strings);
+  return racket;
+}
+
+function attachModel(p, gltf, clip, tint) {
+  const model = cloneSkinned(gltf.scene);
+  model.traverse(o => {
+    if (o.isMesh) {
+      o.castShadow = true;
+      o.frustumCulled = false;
+      o.material = tintMaterial(o.material, tint);
+    }
+  });
+  const lean = new THREE.Group();
+  const holder = new THREE.Group();
+  holder.scale.setScalar(MODEL_H);
+  holder.rotation.y = -Math.PI / 2; // model faces +x; players face local +z
+  holder.add(model);
+  lean.add(holder);
+  p.root.add(lean);
+
+  const mixer = new THREE.AnimationMixer(model);
+  const run = mixer.clipAction(clip);
+  run.play();
+  run.weight = 0;
+  const bone = n => model.getObjectByName(n);
+  const m = {
+    lean, mixer, run,
+    rUp: bone('R_Upperarm'), rFo: bone('R_Forearm'), rHand: bone('R_Hand'),
+    lUp: bone('L_Upperarm'), lFo: bone('L_Forearm'), lHand: bone('L_Hand'),
+  };
+
+  // Racket in the right hand, pointing along the forearm.
+  p.root.updateMatrixWorld(true);
+  const dir = m.rHand.getWorldPosition(_a).sub(m.rFo.getWorldPosition(_b)).normalize();
+  dir.applyQuaternion(m.rHand.getWorldQuaternion(_q).invert());
+  const racket = makeRacket();
+  racket.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), dir);
+  racket.scale.setScalar(1 / m.rHand.getWorldScale(_a).x);
+  m.rHand.add(racket);
+
+  p.hips.visible = p.legL.visible = p.legR.visible = false;
+  p.model = m;
+}
+
+// Rotate `bone` (weight w) so the bone->child segment points along dirWorld.
+function aimBone(bone, child, dirWorld, w) {
+  if (w <= 0.001) return;
+  const cur = child.getWorldPosition(_a).sub(bone.getWorldPosition(_b)).normalize();
+  _q.setFromUnitVectors(cur, dirWorld);
+  bone.getWorldQuaternion(_q2).premultiply(_q);
+  bone.parent.getWorldQuaternion(_pq).invert();
+  _q2.premultiply(_pq);
+  bone.quaternion.slerp(_q2, w);
+  bone.updateMatrixWorld(true);
+}
+
+// Racket-arm direction in player-local space (faces +z, right hand at -x).
+const armDir = (ax, ay, az) =>
+  new THREE.Vector3(0, -1, 0).applyEuler(new THREE.Euler(ax, 0, az, 'XYZ')).applyAxisAngle(Y_AXIS, ay);
+const IDLE_FORE = new THREE.Vector3(-0.3, -0.25, 1).normalize();
+const IDLE_LEFT_UP = new THREE.Vector3(0.3, -1, 0.15).normalize();
+const IDLE_LEFT_FORE = new THREE.Vector3(0.1, -0.4, 1).normalize();
+
+function updateModel(p, speed, dt, ax, ay, az, swingBlend) {
+  const m = p.model;
+  const runW = clamp((speed - 0.6) / 2.4, 0, 1);
+  m.run.weight = runW;
+  m.run.timeScale = Math.max(speed, 2) / RUN_CLIP_SPEED;
+  m.mixer.update(dt);
+
+  m.lean.rotation.set(p.body.rotation.x * 0.5, 0, p.body.rotation.z * 0.6);
+  p.root.updateMatrixWorld(true);
+  m.lean.getWorldQuaternion(_lq);
+
+  const up = armDir(ax, ay, az);
+  const fore = IDLE_FORE.clone().lerp(up, swingBlend).normalize();
+  aimBone(m.rUp, m.rFo, up.applyQuaternion(_lq), 1);
+  aimBone(m.rFo, m.rHand, fore.applyQuaternion(_lq), 1);
+  const lw = 1 - runW;
+  aimBone(m.lUp, m.lFo, IDLE_LEFT_UP.clone().applyQuaternion(_lq), lw);
+  aimBone(m.lFo, m.lHand, IDLE_LEFT_FORE.clone().applyQuaternion(_lq), lw);
+}
+
+new GLTFLoader().load('assets/player.glb', gltf => {
+  const clip = inPlaceClip(gltf.animations[0], gltf.scene);
+  attachModel(ATT, gltf, clip, new THREE.Color(0xb8302a));
+  attachModel(DEF, gltf, clip, null);
+}, undefined, err => console.warn('player model failed to load, using block figures', err));
 
 // ---------------------------------------------------------------------------
 // Ball flight: aim + simulate to a sample table
