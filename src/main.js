@@ -620,7 +620,7 @@ function interceptCandidates(samples, p, { hMin, hMax, volley = false, reaction 
 }
 
 function chooseDefender(c) {
-  const ok = c.filter(x => x.req <= DEF_VMAX);
+  const ok = c.filter(x => x.req <= DEF_VMAX * 1.06); // a last lunge beyond top speed
   if (ok.length) {
     // Earliest reachable point = arriving at full sprint. That's the ギリギリ.
     ok.sort((a, b) => a.s.t - b.s.t);
@@ -648,24 +648,26 @@ function chooseAttacker(c) {
 
 const SHOT_LABEL = { drop: 'DROP SHOT', smash: 'SMASH!', angle: 'ANGLE', wrong: 'WRONG FOOT' };
 
-function attackerSpec(contactKind) {
+function attackerSpec(contactKind, safe = false) {
   const R = DEF.pos;
+  if (safe) // a rally ball back toward the runner, used when every attack would be unreachable
+    return { type: 'drive', tx: clamp(R.x * 0.5 + rand(-1.5, 1.5), -3.8, 3.8), tz: rand(8.5, 11), t: rand(0.85, 1.05), clear: 0.4, rest: 0.72, fric: 0.74 };
   const away = -signOr(R.x);
   if (contactKind === 'smash')
-    return { type: 'smash', tx: away * rand(2.2, 3.7), tz: rand(7, 10.2), t: rand(0.48, 0.6), clear: 0.05, rest: 0.8, fric: 0.82 };
+    return { type: 'smash', tx: away * rand(2.8, 4.0), tz: rand(6, 9.8), t: rand(0.45, 0.58), clear: 0.05, rest: 0.8, fric: 0.82 };
   const r = Math.random();
-  if (R.z > 12.4 && r < 0.4)
-    return { type: 'drop', tx: clamp(-R.x * 0.6 + rand(-1.6, 1.6), -3.6, 3.6), tz: rand(1.6, 3.0), t: rand(1.15, 1.4), clear: 0.12, rest: 0.5, fric: 0.35 };
+  if (R.z > 11.8 && r < 0.45)
+    return { type: 'drop', tx: clamp(-R.x * 0.7 + rand(-1.6, 1.6), -3.9, 3.9), tz: rand(1.2, 2.6), t: rand(1.15, 1.4), clear: 0.12, rest: 0.5, fric: 0.35 };
   if (r < 0.58)
-    return { type: 'angle', tx: away * rand(3.4, 3.95), tz: rand(5.2, 7), t: rand(0.8, 0.95), clear: 0.25, rest: 0.66, fric: 0.72 };
-  if (r < 0.66)
-    return { type: 'wrong', tx: -away * rand(1.8, 3.2), tz: rand(9, 11), t: rand(0.75, 0.9), clear: 0.3, rest: 0.72, fric: 0.74 };
-  return { type: 'drive', tx: away * rand(2.6, 3.9), tz: rand(8.8, 11.2), t: rand(0.7, 0.9), clear: 0.3, rest: 0.72, fric: 0.74 };
+    return { type: 'angle', tx: away * rand(3.6, 4.05), tz: rand(4.8, 6.8), t: rand(0.8, 0.95), clear: 0.25, rest: 0.66, fric: 0.72 };
+  if (r < 0.7)
+    return { type: 'wrong', tx: -away * rand(2.2, 3.6), tz: rand(9.5, 11.4), t: rand(0.75, 0.9), clear: 0.3, rest: 0.72, fric: 0.74 };
+  return { type: 'drive', tx: away * rand(3.2, 4.0), tz: rand(9.5, 11.6), t: rand(0.66, 0.85), clear: 0.3, rest: 0.72, fric: 0.74 };
 }
 
 function defenderSpec(plan) {
   if (Math.random() < (plan.desperate ? 0.75 : 0.45))
-    return { type: 'lob', tx: rand(-3.2, 3.2), tz: rand(-10.5, -6.5), t: rand(2.0, 2.6), clear: 1.0, rest: 0.74, fric: 0.7 };
+    return { type: 'lob', tx: rand(-3.2, 3.2), tz: rand(-10.5, -6.5), t: plan.dive ? rand(2.4, 2.8) : rand(2.0, 2.6), clear: 1.0, rest: 0.74, fric: 0.7 };
   return { type: 'deep', tx: rand(-3.3, 3.3), tz: rand(-11, -8.5), t: rand(1.15, 1.45), clear: 0.45, rest: 0.7, fric: 0.75 };
 }
 
@@ -677,40 +679,68 @@ let shot = null;
 let rally = 0;
 let timeScale = 1;
 let slowUntil = -1;
+const stats = window.__rallyStats = { gets: 0, desperate: 0, forcedDive: 0, dives: 0, resets: 0 };
 
 function launch(hitter, receiver, P, t0, hitKind) {
   let spec, samples, plan;
-  for (let tries = 0; tries < 12; tries++) {
-    spec = hitter === ATT ? attackerSpec(hitKind) : defenderSpec(shot ? shot.plan : { desperate: false });
-    const v = solveShot(P, spec.tx, spec.tz, spec.t, spec.clear);
-    samples = simulate(P, v, spec.rest, spec.fric);
-    if (receiver === DEF) {
-      plan = chooseDefender(interceptCandidates(samples, DEF, { hMin: 0.12, hMax: 2.2, reaction: 0.1 }));
-      if (plan && plan.req < DEF_VMAX * 1.3) break; // allow a dive, but not teleporting
-    } else {
+  if (receiver === DEF) {
+    // Try many attacking shots and keep the one closest to a target difficulty:
+    // the slowest possible run that still reaches the ball (minReq). Above
+    // DEF_VMAX the runner can only get there with a dive.
+    const target = DEF_VMAX * (Math.random() < 0.3 ? rand(1.1, 1.2) : rand(0.8, 1.02));
+    let best = null, easiest = null;
+    for (let tries = 0; tries < 24; tries++) {
+      const sp = attackerSpec(hitKind, tries >= 16);
+      const smp = simulate(P, solveShot(P, sp.tx, sp.tz, sp.t, sp.clear), sp.rest, sp.fric);
+      const cands = interceptCandidates(smp, DEF, { hMin: 0.1, hMax: 2.2, reaction: 0.18 });
+      if (!cands.length) continue;
+      const minReq = Math.min(...cands.map(c => c.req));
+      if (!easiest || minReq < easiest.minReq) easiest = { minReq, sp, smp, cands };
+      if (minReq > DEF_VMAX * 1.22) continue; // truly unreachable
+      const score = Math.abs(minReq - target);
+      if (!best || score < best.score) best = { score, sp, smp, cands };
+    }
+    best = best || easiest;
+    if (location.search.includes('stats')) (stats.minReqs = stats.minReqs || []).push(+((best ? Math.min(...best.cands.map(c => c.req)) : -1) / DEF_VMAX).toFixed(2), +(easiest ? easiest.minReq / DEF_VMAX : -1).toFixed(2));
+    if (best) {
+      spec = best.sp;
+      samples = best.smp;
+      plan = chooseDefender(best.cands);
+    }
+  } else {
+    for (let tries = 0; tries < 12; tries++) {
+      spec = defenderSpec(shot ? shot.plan : { desperate: false });
+      samples = simulate(P, solveShot(P, spec.tx, spec.tz, spec.t, spec.clear), spec.rest, spec.fric);
       plan = chooseAttacker(interceptCandidates(samples, ATT, { hMin: 0.3, hMax: 1.8, volley: true, reaction: 0.2 }));
       if (plan) break;
     }
   }
 
   if (!plan) { startRally(); return; }
+  if (receiver === DEF) {
+    stats.gets++;
+    if (plan.desperate) stats.desperate++;
+    if (plan.dive) stats.forcedDive++;
+  }
   const hitTime = t0 + plan.s.t;
   setMove(receiver, new THREE.Vector3(plan.sx, 0, plan.sz), t0 + (plan.dive ? 0.04 : 0.1), hitTime);
   receiver.swing = { time: hitTime, kind: plan.kind };
-  const dive = receiver === DEF && (plan.dive || (plan.desperate && Math.random() < 0.4));
+  const dive = receiver === DEF && (plan.dive || (plan.desperate && Math.random() < 0.15));
   receiver.lunge = receiver === DEF && plan.desperate && !dive ? { time: hitTime, side: plan.side, dive: false } : null;
+  plan.drama = dive || (receiver === DEF && plan.s.y < 0.3);
+  if (dive) stats.dives++;
   receiver.anim = dive ? { kind: 'dive', time: hitTime } : plan.kind === 'smash' ? { kind: 'smash', time: hitTime } : null;
 
   const homeDist = hitter.pos.distanceTo(hitter.home);
-  const getUp = hitter.anim && hitter.anim.kind === 'dive' ? 0.95 : 0; // finish the roll first
-  setMove(hitter, hitter.home, t0 + 0.3 + getUp, t0 + 0.3 + getUp + 0.4 + homeDist / 4.5);
+  const getUp = hitter.anim && hitter.anim.kind === 'dive' ? 0.6 : 0; // finish the roll first
+  setMove(hitter, hitter.home, t0 + 0.3 + getUp, t0 + 0.3 + getUp + 0.4 + homeDist / (hitter === DEF ? 3.8 : 4.5));
 
   shot = { samples, t0, hitter, receiver, plan, spec, lastB: 0 };
   if (SHOT_LABEL[spec.type]) flash(SHOT_LABEL[spec.type]);
 }
 
 function startRally() {
-  if (rally) console.warn('rally reset at', rally);
+  if (rally) { console.warn('rally reset at', rally); stats.resets++; }
   rally = 0;
   ATT.pos.set(0.6, 0, -10.2);
   const P = new THREE.Vector3(0, 1.0, -10.1);
@@ -746,13 +776,14 @@ function step(dt) {
       const hitter = shot.receiver;
       rally++;
       document.getElementById('rally').textContent = rally;
+      if (shot.plan.drama) slowUntil = hitAt + 0.35;
       if (hitter === DEF && shot.plan.desperate) {
-        slowUntil = hitAt + 0.35;
         if (shot.plan.dive || Math.random() < 0.35) flash(pick(['GREAT GET!', 'STILL ALIVE!', 'JUST REACHED IT!']));
       }
       if (rally % 100 === 0) flash(`${rally} SHOTS!`);
       sound('hit');
       launch(hitter, hitter === ATT ? DEF : ATT, P, hitAt, shot.plan.kind);
+      if (!shot) return; // rally restarted
     }
     const b = ballAt(simT - shot.t0);
     if (b.b > shot.lastB) {
@@ -915,7 +946,7 @@ function frame(now) {
 
   // Slow motion right before / after a desperate get.
   let target = 1;
-  if (slowOn && shot && shot.receiver === DEF && shot.plan.desperate) {
+  if (slowOn && shot && shot.plan.drama) {
     const until = shot.t0 + shot.plan.s.t - simT;
     if (until < 0.45) target = 0.3;
   }
