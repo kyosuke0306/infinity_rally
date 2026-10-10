@@ -548,9 +548,9 @@ function step(dt) {
       document.getElementById('rally').textContent = rally;
       if (hitter === DEF && shot.plan.desperate) {
         slowUntil = hitAt + 0.35;
-        if (shot.plan.dive || Math.random() < 0.35) flash(pick(['ナイスゲット!', 'まだ返す!', '届いた!']));
+        if (shot.plan.dive || Math.random() < 0.35) flash(pick(['GREAT GET!', 'STILL ALIVE!', 'JUST REACHED IT!']));
       }
-      if (rally % 100 === 0) flash(`${rally} 球!`);
+      if (rally % 100 === 0) flash(`${rally} SHOTS!`);
       sound('hit');
       launch(hitter, hitter === ATT ? DEF : ATT, P, hitAt, shot.plan.kind);
     }
@@ -573,10 +573,10 @@ const pick = a => a[Math.floor(Math.random() * a.length)];
 // ---------------------------------------------------------------------------
 const CAMS = [
   { id: 'tv', name: 'TV' },
-  { id: 'runner', name: '背後' },
-  { id: 'side', name: 'サイド' },
-  { id: 'orbit', name: '周回' },
-  { id: 'low', name: 'ローアングル' },
+  { id: 'runner', name: 'Behind' },
+  { id: 'side', name: 'Side' },
+  { id: 'orbit', name: 'Orbit' },
+  { id: 'low', name: 'Low' },
 ];
 let camIdx = 0;
 let autoCam = true;
