@@ -19,3 +19,5 @@ html, body { margin: 0; height: 100%; background: #070b18; color: var(--fg); ove
 #ver { position: fixed; right: 12px; bottom: max(10px, env(safe-area-inset-bottom)); font-size: 11px; color: var(--dim);
   font-variant-numeric: tabular-nums; text-shadow: 0 1px 3px #000; pointer-events: none; text-align: right; }
 #ver .name { font-size: 13px; letter-spacing: .12em; color: rgba(232,236,248,.75); margin-bottom: 2px; }
+#controls button { display: inline-flex; align-items: center; gap: 6px; }
+.ico { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
