@@ -1,4 +1,4 @@
-# Infinity Rally
+# infinity rally
 
 打ち込まれても、ドロップで揺さぶられても、走りまくってギリギリで返す。
 終わらないテニスのラリーをただ眺めるための Web アプリ（Three.js）。

@@ -653,7 +653,7 @@ function flash(text) {
   msgTimer = setTimeout(() => msgEl.classList.remove('show'), 1200);
 }
 
-const verEl = document.getElementById('ver');
+const verEl = document.getElementById('verText');
 const v = window.APP_VERSION || 'dev';
 verEl.textContent = `${v === 'dev' ? 'dev' : 'v' + v}  ${window.APP_PUBLISHED || ''}`;
 
