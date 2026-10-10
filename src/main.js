@@ -635,7 +635,7 @@ function chooseDefender(c) {
 function chooseAttacker(c) {
   const ok = c.filter(x => x.req <= 6.5);
   const smash = ok.filter(x => x.kind === 'smash' && x.s.z < -2.5 && x.s.z > -11);
-  if (smash.length) return smash[Math.floor(smash.length / 2)];
+  if (smash.length && Math.random() < 0.15) return smash[Math.floor(smash.length / 2)];
   const ground = ok.filter(x => x.kind !== 'smash');
   if (ground.length) {
     ground.sort((a, b) => (Math.abs(a.s.y - 0.9) + a.req * 0.05) - (Math.abs(b.s.y - 0.9) + b.req * 0.05));
@@ -648,26 +648,38 @@ function chooseAttacker(c) {
 
 const SHOT_LABEL = { drop: 'DROP SHOT', smash: 'SMASH!', angle: 'ANGLE', wrong: 'WRONG FOOT' };
 
-function attackerSpec(contactKind, safe = false) {
+const SHOT_MIX = [['drive', 0.4], ['drop', 0.27], ['angle', 0.2], ['wrong', 0.13]];
+function pickShotType() {
+  let r = Math.random();
+  for (const [type, w] of SHOT_MIX) if ((r -= w) < 0) return type;
+  return 'drive';
+}
+
+function attackerSpec(contactKind, type) {
   const R = DEF.pos;
-  if (safe) // a rally ball back toward the runner, used when every attack would be unreachable
-    return { type: 'drive', tx: clamp(R.x * 0.5 + rand(-1.5, 1.5), -3.8, 3.8), tz: rand(8.5, 11), t: rand(0.85, 1.05), clear: 0.4, rest: 0.72, fric: 0.74 };
   const away = -signOr(R.x);
   if (contactKind === 'smash')
     return { type: 'smash', tx: away * rand(2.8, 4.0), tz: rand(6, 9.8), t: rand(0.45, 0.58), clear: 0.05, rest: 0.8, fric: 0.82 };
-  const r = Math.random();
-  if (R.z > 11.8 && r < 0.45)
-    return { type: 'drop', tx: clamp(-R.x * 0.7 + rand(-1.6, 1.6), -3.9, 3.9), tz: rand(1.2, 2.6), t: rand(1.15, 1.4), clear: 0.12, rest: 0.5, fric: 0.35 };
-  if (r < 0.58)
-    return { type: 'angle', tx: away * rand(3.6, 4.05), tz: rand(4.8, 6.8), t: rand(0.8, 0.95), clear: 0.25, rest: 0.66, fric: 0.72 };
-  if (r < 0.7)
-    return { type: 'wrong', tx: -away * rand(2.2, 3.6), tz: rand(9.5, 11.4), t: rand(0.75, 0.9), clear: 0.3, rest: 0.72, fric: 0.74 };
-  return { type: 'drive', tx: away * rand(3.2, 4.0), tz: rand(9.5, 11.6), t: rand(0.66, 0.85), clear: 0.3, rest: 0.72, fric: 0.74 };
+  switch (type) {
+    case 'safe': // a rally ball back toward the runner, used when every attack would be unreachable
+      return { type: 'drive', tx: clamp(R.x * 0.5 + rand(-1.5, 1.5), -3.8, 3.8), tz: rand(8.5, 11), t: rand(0.85, 1.05), clear: 0.4, rest: 0.72, fric: 0.74 };
+    case 'drop':
+      return { type: 'drop', tx: clamp(-R.x * 0.8 + rand(-1.5, 1.5), -3.9, 3.9), tz: rand(0.9, 2.2), t: rand(0.9, 1.15), clear: 0.08, rest: 0.42, fric: 0.25 };
+    case 'angle':
+      return { type: 'angle', tx: away * rand(3.6, 4.05), tz: rand(4.8, 6.8), t: rand(0.8, 0.95), clear: 0.25, rest: 0.66, fric: 0.72 };
+    case 'wrong':
+      return { type: 'wrong', tx: -away * rand(2.2, 3.6), tz: rand(9.5, 11.4), t: rand(0.75, 0.9), clear: 0.3, rest: 0.72, fric: 0.74 };
+    default:
+      return { type: 'drive', tx: away * rand(3.2, 4.0), tz: rand(9.5, 11.6), t: rand(0.66, 0.85), clear: 0.3, rest: 0.72, fric: 0.74 };
+  }
 }
 
 function defenderSpec(plan) {
-  if (Math.random() < (plan.desperate ? 0.75 : 0.45))
+  const r = Math.random();
+  if (r < (plan.dive ? 0.35 : plan.desperate ? 0.18 : 0.1))
     return { type: 'lob', tx: rand(-3.2, 3.2), tz: rand(-10.5, -6.5), t: plan.dive ? rand(2.4, 2.8) : rand(2.0, 2.6), clear: 1.0, rest: 0.74, fric: 0.7 };
+  if (r < 0.55)
+    return { type: 'slice', tx: rand(-3.4, 3.4), tz: rand(-10.5, -8), t: rand(1.3, 1.6), clear: 0.3, rest: 0.6, fric: 0.82 };
   return { type: 'deep', tx: rand(-3.3, 3.3), tz: rand(-11, -8.5), t: rand(1.15, 1.45), clear: 0.45, rest: 0.7, fric: 0.75 };
 }
 
@@ -679,7 +691,7 @@ let shot = null;
 let rally = 0;
 let timeScale = 1;
 let slowUntil = -1;
-const stats = window.__rallyStats = { gets: 0, desperate: 0, forcedDive: 0, dives: 0, resets: 0 };
+const stats = window.__rallyStats = { gets: 0, desperate: 0, forcedDive: 0, dives: 0, resets: 0, types: {} };
 
 function launch(hitter, receiver, P, t0, hitKind) {
   let spec, samples, plan;
@@ -689,21 +701,26 @@ function launch(hitter, receiver, P, t0, hitKind) {
     // DEF_VMAX the runner can only get there with a dive.
     const target = DEF_VMAX * (Math.random() < 0.3 ? rand(1.1, 1.2) : rand(0.8, 1.02));
     let best = null, easiest = null;
-    for (let tries = 0; tries < 24; tries++) {
-      const sp = attackerSpec(hitKind, tries >= 16);
+    const want = pickShotType();
+    for (let tries = 0; tries < 32; tries++) {
+      if (tries === 16 && best && best.minReq > DEF_VMAX * 0.6) break; // the wanted shot type works
+      const type = tries < 16 ? want : tries < 28 ? pickShotType() : 'safe';
+      const sp = attackerSpec(hitKind, type);
       const smp = simulate(P, solveShot(P, sp.tx, sp.tz, sp.t, sp.clear), sp.rest, sp.fric);
       const cands = interceptCandidates(smp, DEF, { hMin: 0.1, hMax: 2.2, reaction: 0.18 });
+      if (location.search.includes('stats') && tries < 16) { const k = want + ':' + (cands.length ? (Math.min(...cands.map(c => c.req)) / DEF_VMAX).toFixed(1) : 'none'); stats.probe = stats.probe || {}; stats.probe[k] = (stats.probe[k] || 0) + 1; }
       if (!cands.length) continue;
       const minReq = Math.min(...cands.map(c => c.req));
       if (!easiest || minReq < easiest.minReq) easiest = { minReq, sp, smp, cands };
       if (minReq > DEF_VMAX * 1.22) continue; // truly unreachable
       const score = Math.abs(minReq - target);
-      if (!best || score < best.score) best = { score, sp, smp, cands };
+      if (!best || score < best.score) best = { score, minReq, sp, smp, cands };
     }
     best = best || easiest;
     if (location.search.includes('stats')) (stats.minReqs = stats.minReqs || []).push(+((best ? Math.min(...best.cands.map(c => c.req)) : -1) / DEF_VMAX).toFixed(2), +(easiest ? easiest.minReq / DEF_VMAX : -1).toFixed(2));
     if (best) {
       spec = best.sp;
+      stats.types[spec.type] = (stats.types[spec.type] || 0) + 1;
       samples = best.smp;
       plan = chooseDefender(best.cands);
     }
@@ -765,11 +782,16 @@ function step(dt) {
     const { P, at } = pendingServe;
     pendingServe = null;
     launch(ATT, DEF, P, at, 'fh');
-    sound('hit');
+    sound('hit', { pos: P, ...HIT_TONE.drive });
   }
 
   if (shot) {
     const hitAt = shot.t0 + shot.plan.s.t;
+    // Shoes squeal on the hard court when the runner plants for a desperate get.
+    if (shot.receiver === DEF && shot.plan.desperate && !shot.squeaked && simT >= hitAt - 0.3) {
+      shot.squeaked = true;
+      if (shot.plan.drama || Math.random() < 0.5) sound('squeak', { pos: DEF.pos, power: 0.5 });
+    }
     if (simT >= hitAt) {
       const s = shot.plan.s;
       const P = new THREE.Vector3(s.x, s.y, s.z);
@@ -781,15 +803,17 @@ function step(dt) {
         if (shot.plan.dive || Math.random() < 0.35) flash(pick(['GREAT GET!', 'STILL ALIVE!', 'JUST REACHED IT!']));
       }
       if (rally % 100 === 0) flash(`${rally} SHOTS!`);
-      sound('hit');
+      const scramble = hitter === DEF && shot.plan.desperate ? 0.8 : 1;
       launch(hitter, hitter === ATT ? DEF : ATT, P, hitAt, shot.plan.kind);
       if (!shot) return; // rally restarted
+      const tone = HIT_TONE[shot.spec.type] || HIT_TONE.drive;
+      sound('hit', { pos: P, power: tone.power * scramble, rate: tone.rate });
     }
     const b = ballAt(simT - shot.t0);
     if (b.b > shot.lastB) {
       shot.lastB = b.b;
       if (b.b === 1) spawnRing(b.x, b.z);
-      sound('bounce', b.b === 1 ? 1 : 0.5);
+      sound('bounce', { pos: ball.position, power: b.b === 1 ? 0.8 : 0.4 });
     }
     ball.position.set(b.x, Math.max(b.y, 0.06), b.z);
   }
@@ -845,31 +869,155 @@ function setCam(i) {
 }
 
 // ---------------------------------------------------------------------------
-// Sound (off by default — needs a user gesture anyway)
+// Sound: synthesized racket hits, bounces and shoe squeaks.
+// Starts on the first tap/click/key (browsers block audio before a gesture).
 // ---------------------------------------------------------------------------
-let audio = null, soundOn = false, noiseBuf = null;
-function sound(kind, vol = 1) {
-  if (!soundOn || !audio) return;
-  const src = audio.createBufferSource();
-  src.buffer = noiseBuf;
-  const f = audio.createBiquadFilter();
-  f.type = 'bandpass';
-  f.frequency.value = kind === 'hit' ? 1500 : 700;
-  f.Q.value = kind === 'hit' ? 1.2 : 2;
-  const g = audio.createGain();
-  const now = audio.currentTime;
-  const peak = (kind === 'hit' ? 0.5 : 0.22) * vol;
-  g.gain.setValueAtTime(peak, now);
-  g.gain.exponentialRampToValueAtTime(0.001, now + (kind === 'hit' ? 0.09 : 0.06));
-  src.connect(f).connect(g).connect(audio.destination);
-  src.start(now, Math.random() * 0.5, 0.12);
+let audio = null, soundOn = true, master = null, wet = null;
+const SOUNDS = {};
+
+// Build a mono buffer from a sample function f(t) -> value, then normalize.
+function synth(dur, f, peak = 0.9) {
+  const sr = audio.sampleRate, n = Math.floor(dur * sr);
+  const buf = audio.createBuffer(1, n, sr);
+  const d = buf.getChannelData(0);
+  let max = 0;
+  for (let i = 0; i < n; i++) { d[i] = f(i / sr); max = Math.max(max, Math.abs(d[i])); }
+  for (let i = 0; i < n; i++) d[i] *= peak / max;
+  // 2 ms fade-out so the tail never clicks
+  const fade = Math.floor(0.002 * sr);
+  for (let i = 0; i < fade; i++) d[n - 1 - i] *= i / fade;
+  return buf;
 }
+
+// Damped sine with a slight downward pitch glide.
+const ring = (t, f, tau, glide = 0) => Math.exp(-t / tau) * Math.sin(2 * Math.PI * f * t * (1 - glide * Math.min(t / 0.03, 1)));
+
+// Band-limited noise: one-pole smoothed white noise, differentiated for brightness.
+function noiseFn(bright) {
+  let lp = 0, prev = 0;
+  return () => {
+    const w = Math.random() * 2 - 1;
+    lp += (w - lp) * bright;
+    const out = lp - prev * 0.6;
+    prev = lp;
+    return out;
+  };
+}
+
+function buildSounds() {
+  // Racket hit: sharp string "pock" — transient click, body resonances, short noise burst.
+  SOUNDS.hit = [];
+  for (let k = 0; k < 6; k++) {
+    const f1 = rand(1050, 1300), f2 = rand(560, 680), f3 = rand(2100, 2600), thump = rand(160, 210);
+    const nz = noiseFn(0.55);
+    SOUNDS.hit.push(synth(0.22, t =>
+      (t < 0.0015 ? (Math.random() * 2 - 1) * (1 - t / 0.0015) * 0.9 : 0) +
+      0.8 * ring(t, f1, 0.009, 0.06) +
+      0.55 * ring(t, f2, 0.014, 0.04) +
+      0.3 * ring(t, f3, 0.005) +
+      0.45 * ring(t, thump, 0.018) +
+      0.5 * nz() * Math.exp(-t / 0.011)));
+  }
+  // Bounce on a hard court: duller, lower "tock".
+  SOUNDS.bounce = [];
+  for (let k = 0; k < 4; k++) {
+    const f1 = rand(230, 290), f2 = rand(820, 980);
+    const nz = noiseFn(0.35);
+    SOUNDS.bounce.push(synth(0.15, t =>
+      0.9 * ring(t, f1, 0.011, 0.08) +
+      0.35 * ring(t, f2, 0.004) +
+      0.4 * nz() * Math.exp(-t / 0.004), 0.8));
+  }
+  // Shoe squeak: rubber stick-slip — a gliding tone chopped at ~70 Hz.
+  SOUNDS.squeak = [];
+  for (let k = 0; k < 3; k++) {
+    const f0 = rand(2200, 2700), df = rand(300, 700), dur = rand(0.09, 0.16), chop = rand(55, 85);
+    let ph = 0;
+    SOUNDS.squeak.push(synth(dur, t => {
+      ph += 2 * Math.PI * (f0 + df * t / dur) / audio.sampleRate;
+      const env = Math.sin(Math.PI * t / dur);
+      return env * (0.6 + 0.4 * Math.sin(2 * Math.PI * chop * t)) * (Math.sin(ph) + 0.3 * Math.sin(2 * ph));
+    }, 0.5));
+  }
+}
+
+// Outdoor court: a few hard early reflections off the walls and a short tail.
+function courtImpulse() {
+  const sr = audio.sampleRate, n = Math.floor(0.7 * sr);
+  const ir = audio.createBuffer(2, n, sr);
+  for (let c = 0; c < 2; c++) {
+    const d = ir.getChannelData(c);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / sr / 0.16) * 0.25;
+    for (const [ms, a] of [[23, 0.7], [41, 0.45], [67, 0.3], [95, 0.18]]) d[Math.floor((ms + c * 3) / 1000 * sr)] += a;
+  }
+  return ir;
+}
+
 function initAudio() {
+  if (audio) return;
   audio = new (window.AudioContext || window.webkitAudioContext)();
-  noiseBuf = audio.createBuffer(1, audio.sampleRate, audio.sampleRate);
-  const d = noiseBuf.getChannelData(0);
-  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  master = audio.createGain();
+  master.gain.value = 0.8;
+  const comp = audio.createDynamicsCompressor();
+  master.connect(comp).connect(audio.destination);
+  const verb = audio.createConvolver();
+  verb.buffer = courtImpulse();
+  wet = audio.createGain();
+  wet.gain.value = 0.22;
+  wet.connect(verb).connect(master);
+  buildSounds();
 }
+
+const _cam = new THREE.Vector3();
+// pos: world position of the sound; power: 0..1 how hard; rate: pitch factor.
+function sound(kind, { pos = null, power = 1, rate = 1 } = {}) {
+  if (!soundOn || !audio || audio.state !== 'running') return;
+  const list = SOUNDS[kind];
+  const src = audio.createBufferSource();
+  src.buffer = list[Math.floor(Math.random() * list.length)];
+  // Slow motion drops the pitch, like a slowed-down recording.
+  src.playbackRate.value = rate * rand(0.97, 1.03) * lerp(0.72, 1, clamp((timeScale - 0.3) / 0.7, 0, 1));
+
+  let gain = 0.3 + 0.7 * power, pan = 0;
+  if (pos) {
+    _cam.copy(pos).applyMatrix4(camera.matrixWorldInverse);
+    const dist = _cam.length();
+    gain *= 1 / (1 + dist / 14);
+    pan = clamp(_cam.x / Math.max(-_cam.z, 4) * 0.9, -0.8, 0.8);
+  }
+  // Soft shots sound duller.
+  const tone = audio.createBiquadFilter();
+  tone.type = 'lowpass';
+  tone.frequency.value = 2500 + 9000 * power;
+  const g = audio.createGain();
+  g.gain.value = gain;
+  src.connect(tone).connect(g);
+  let out = g;
+  if (audio.createStereoPanner) {
+    const p = audio.createStereoPanner();
+    p.pan.value = pan;
+    out = g.connect(p);
+  }
+  out.connect(master);
+  out.connect(wet);
+  src.start();
+}
+
+// How each shot type sounds when struck.
+const HIT_TONE = {
+  smash: { power: 1, rate: 1.06 }, drive: { power: 0.85, rate: 1 }, angle: { power: 0.8, rate: 1 },
+  wrong: { power: 0.85, rate: 1 }, deep: { power: 0.75, rate: 0.98 }, slice: { power: 0.55, rate: 0.95 },
+  lob: { power: 0.45, rate: 0.95 }, drop: { power: 0.3, rate: 0.93 },
+};
+
+let unlockedAt = 0;
+function unlockAudio() {
+  if (!soundOn) return;
+  if (!audio || audio.state !== 'running') unlockedAt = performance.now();
+  initAudio();
+  if (audio.state !== 'running') audio.resume();
+}
+['pointerdown', 'touchstart', 'keydown'].forEach(e => window.addEventListener(e, unlockAudio, { passive: true }));
 
 // ---------------------------------------------------------------------------
 // UI
@@ -908,9 +1056,9 @@ document.getElementById('btnSlow').onclick = () => {
   document.getElementById('slowState').textContent = slowOn ? 'ON' : 'OFF';
 };
 document.getElementById('btnSound').onclick = () => {
-  if (!audio) initAudio();
-  soundOn = !soundOn;
-  if (soundOn) audio.resume();
+  // The press that unlocked audio should leave it on, not toggle it off.
+  if (performance.now() - unlockedAt > 800) soundOn = !soundOn;
+  if (soundOn) { initAudio(); audio.resume(); }
   document.getElementById('soundState').textContent = soundOn ? 'ON' : 'OFF';
 };
 document.getElementById('btnFull').onclick = () => {
