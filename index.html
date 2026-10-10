@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Infinity Rally</title>
+<meta name="description" content="打ち込まれても走りまくってギリギリで返す。終わらないテニスのラリーをただ眺めるアプリ。">
+<meta name="theme-color" content="#070b18">
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+<script src="version.js"></script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"><span class="label">RALLY</span><span id="rally">0</span></div>
+<div id="msg"></div>
+<div id="controls">
+  <button id="btnCam" title="カメラ切替">📷 <span id="camName">TV</span></button>
+  <button id="btnAuto" title="カメラ自動切替">🔁 自動 <span id="autoState">ON</span></button>
+  <button id="btnSlow" title="ギリギリの瞬間をスロー">🐢 スロー <span id="slowState">ON</span></button>
+  <button id="btnSound" title="打球音">🔈 音 <span id="soundState">OFF</span></button>
+  <button id="btnFull" title="全画面">⛶</button>
+</div>
+<div id="ver"></div>
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

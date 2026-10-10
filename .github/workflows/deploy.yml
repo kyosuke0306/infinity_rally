@@ -1,0 +1,44 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build site and stamp version
+        run: |
+          BASE=$(tr -d '[:space:]' < VERSION)
+          VER="${BASE}.${{ github.run_number }}"
+          PUBLISHED=$(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M JST')
+          mkdir -p _site
+          cp -r index.html style.css src _site/
+          if [ -d assets ]; then cp -r assets _site/; fi
+          printf 'window.APP_VERSION = "%s";\nwindow.APP_PUBLISHED = "%s";\n' "$VER" "$PUBLISHED" > _site/version.js
+          echo "Deploying v$VER ($PUBLISHED)"
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
